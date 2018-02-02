@@ -35,7 +35,13 @@ struct Font
 	uint8_t first_char;
 	// the number of characters in this font
 	uint8_t char_count;
-	// the character data
+	/* The character data, organized vertical.
+	 * Assuming the height=2 and width=8 the first character will occupy
+	 * the bytes 0..15, the second one 16..31 and so on.
+	 * data[0] bits 0..7 = pixels x=0,y=0..7
+	 * data[1] bits 0..7 = pixels x=0,y=8..15
+	 * data[2] bits 0..7 = pixels x=1,y=0..7
+	 */
 	const uint8_t* data;
 };
 
@@ -44,6 +50,16 @@ extern const Font font_8x8;
 extern const Font font_8x12;
 extern const Font font_16x16;
 extern const Font font_7seg_32x50;
+
+struct Icon
+{
+	// height in bytes (8 pixel)
+	uint8_t height;
+	// width in pixels
+	int8_t width;
+	// data, vertically arranged like the characters
+	const uint8_t* data;
+};
 
 class Display
 {
@@ -641,9 +657,12 @@ public:
 	*/
 	uint8_t text( uint8_t x, uint8_t y, const Font& font, PixelOperation op,
 			const char* text, uint8_t length );
-	/* +++++ implement
-	void icon( uint8_t x, uint8_t y, Icon& icon, PixelOperation op );
-	*/
+	void icon( uint8_t x, uint8_t y, Icon& icon, PixelOperation op )
+	{
+		raw_icon( x, y, op, icon.width, icon.height, icon.data );
+	}
+	void raw_icon( uint8_t x, uint8_t y, PixelOperation op,
+			uint8_t width, uint8_t height, const uint8_t* data );
 };
 
 }; // namespace SSD1306

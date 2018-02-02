@@ -186,7 +186,7 @@ void Display::rect_filled( uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2, Pixel
 	if( y1 > y2 ) swap( y1, y2 );
 	uint8_t start_page = y1 >> 3;
 	uint8_t end_page = y2 >> 3;
-	for( uint8_t page=start_page+1; page<end_page; page++ )
+	for( uint8_t page=start_page; page<=end_page; page++ )
 	{
 		uint8_t* pgfx = gfx + page * WIDTH_PIX + x1;
 		uint8_t pattern;
@@ -195,12 +195,12 @@ void Display::rect_filled( uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2, Pixel
 			if( page == end_page )
 			{
 				// Y start and end are in the same page
-				pattern = (1 << (y2 & 3)) - (1 << (y1 & 3));
+				pattern = (2 << (y2 & 7)) - (1 << (y1 & 7));
 			}
 			else
 			{
 				// Y start is in this page, end is in a later page
-				pattern = (1 << 8) - (1 << (y1 & 3));
+				pattern = (1 << 8) - (1 << (y1 & 7));
 			}
 		}
 		else
@@ -208,7 +208,7 @@ void Display::rect_filled( uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2, Pixel
 			if( page == end_page )
 			{
 				// Y end is in this page but not the start
-				pattern = (1 << (y2 & 3)) - 1;
+				pattern = (2 << (y2 & 7)) - 1;
 			}
 			else
 			{
@@ -232,8 +232,8 @@ void Display::rect_filled( uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2, Pixel
 
 void Display::pixel_internal( uint8_t x, uint8_t y, PixelOperation op )
 {
-	uint8_t* pgfx = gfx + x + (y&~3) * (WIDTH_PIX/8);
-	uint8_t pattern = 1 << (y & 3);
+	uint8_t* pgfx = gfx + x + (y&~7) * (WIDTH_PIX/8);
+	uint8_t pattern = 1 << (y & 7);
 	switch( op )
 	{
 		case SET_PIXEL: *pgfx |= pattern; break;
@@ -348,9 +348,6 @@ uint8_t Display::text( uint8_t x, uint8_t y, const Font& font, PixelOperation op
 	{
 		return 0;
 	}
-	// uint16_t char_bytes = font.width * ((font.height + 7) >> 3);
-	uint8_t pixshift = y & 7;
-	uint8_t iymax = font.height - (pixshift == 0 ? 1 : 0);
 	while( length > 0 && x < WIDTH_PIX )
 	{
 		uint8_t c = uint8_t(*text);
@@ -358,38 +355,8 @@ uint8_t Display::text( uint8_t x, uint8_t y, const Font& font, PixelOperation op
 		length--;
 		if( c >= font.first_char && c < (font.first_char + font.char_count) )
 		{
-			// data = font.data + char_bytes * (c - font.first_char);
 			data = font.data + font.height * font.width * (c - font.first_char);
-			printf( "D %d\n", data-font.data );
-			for( uint8_t ix=0; ix<font.width; ix++ )
-			{
-				uint8_t carry = 0;
-				for( uint8_t iy=0; iy<=iymax; iy++ )
-				{
-					if( (y + 8*iy) > HEIGHT_PIX )
-					{
-						data += font.height - iy;
-						break;
-					}
-					uint8_t pattern = iy < font.height ? *data++ : 0;
-					printf( "%d > %02X %02X\n", pixshift, carry, pattern );
-					if( pixshift )
-					{
-						uint8_t tmp = carry | (pattern << pixshift);
-						carry = pattern >> (pixshift ^ 7);
-						pattern = tmp;
-					}
-					printf( "%d < %02X %02X\n", pixshift, carry, pattern );
-					uint8_t* pgfx = gfx + (x + ix) + ((y >> 3) + iy) * WIDTH_PIX;
-					printf( "%03d/%02d pattern %02X\n", ix, iy, pattern );
-					switch( op )
-					{
-						case SET_PIXEL: *pgfx |= pattern; break;
-						case CLEAR_PIXEL: *pgfx &= ~pattern; break;
-						case INVERT_PIXEL: *pgfx ^= pattern; break;
-					}
-				}
-			}
+			raw_icon( x, y, op, font.width, font.height, data );
 		}
 		x += font.width + font.space;
 		w += font.width + font.space;
@@ -397,10 +364,50 @@ uint8_t Display::text( uint8_t x, uint8_t y, const Font& font, PixelOperation op
 	return w;
 }
 
-/* +++++ implement
-void Display::icon( uint8_t x, uint8_t y, Icon& icon, PixelOperation op )
+void Display::raw_icon( uint8_t x, uint8_t y, PixelOperation op,
+		uint8_t width, uint8_t height, const uint8_t* data )
 {
+	if( y >= HEIGHT_PIX || x >= WIDTH_PIX )
+	{
+		return;
+	}
+	if( (x + width) > WIDTH_PIX )
+	{
+		width = WIDTH_PIX - x;
+	}
+	uint8_t pixshift = y & 7;
+	uint8_t iymax = height - (pixshift == 0 ? 1 : 0);
+	printf( "iymax = %d\n", iymax );
+	if( ((y & ~7) + 8 * iymax) > HEIGHT_PIX )
+	{
+		iymax = ((HEIGHT_PIX - (y & ~7)) >> 3) - 1;
+	}
+	for( uint8_t ix=0; ix<width; ix++ )
+	{
+		uint8_t iy;
+		uint8_t carry = 0;
+		for( iy=0; iy<=iymax; iy++ )
+		{
+			uint8_t pattern = iy < height ? data[iy] : 0;
+			printf( "p=%02X", pattern );
+			if( pixshift )
+			{
+				uint8_t tmp = carry | (pattern << pixshift);
+				carry = pattern >> (8 - pixshift);
+				pattern = tmp;
+				printf( " c=%02X P=%02X", carry, pattern );
+			}
+			printf( "\n" );
+			uint8_t* pgfx = gfx + (x + ix) + ((y >> 3) + iy) * WIDTH_PIX;
+			switch( op )
+			{
+				case SET_PIXEL: *pgfx |= pattern; break;
+				case CLEAR_PIXEL: *pgfx &= ~pattern; break;
+				case INVERT_PIXEL: *pgfx ^= pattern; break;
+			}
+		}
+		data += height;
+	}
 }
-*/
 
 
