@@ -1,16 +1,12 @@
 
+#ifndef SSD1306_H
+#define SSD1306_H
+
 #include <stdint.h>
 #include <string.h>
 
 namespace SSD1306
 {
-
-inline void swap( uint8_t& a, uint8_t& b )
-{
-	uint8_t x = a;
-	a = b;
-	b = x;
-}
 
 class Base_I2C
 {
@@ -27,221 +23,48 @@ public:
 			uint8_t* data, uint16_t length ) = 0;
 };
 
-#ifdef OPENCM3
-
-#include <libopencm3/stm32/rcc.h>
-#include <libopencm3/stm32/i2c.h>
-
-class OpenCM3_I2C : public Base_I2C
-{
-	uint32_t i2c;
-public:
-	// OpenCM3_I2C( I2C2 )
-	// OpenCM3_I2C( uint32_t _i2c )
-	OpenCM3_I2C()
-	  : i2c(I2C2)
-	{
-	}
-private:
-	OpenCM3_I2C( const OpenCM3_I2C& orig ) : Base_I2C( orig ), i2c(0) {}
-public:
-	~OpenCM3_I2C()
-	{
-	}
-private:
-	OpenCM3_I2C& operator=( const OpenCM3_I2C& orig __attribute__((unused)) ) { return *this; }
-public:
-	void initialize()
-	{
-		/* Enable clocks for I2C2 and AFIO. */
-		rcc_periph_clock_enable( RCC_I2C2 );
-		rcc_periph_clock_enable( RCC_AFIO );
-
-		/* Set alternate functions for the SCL and SDA pins of I2C2. */
-		gpio_set_mode( GPIOB, GPIO_MODE_OUTPUT_50_MHZ,
-				GPIO_CNF_OUTPUT_ALTFN_OPENDRAIN,
-				GPIO_I2C2_SCL | GPIO_I2C2_SDA );
-
-		/* Disable the I2C before changing any configuration. */
-		i2c_peripheral_disable( i2c );
-
-		/* APB1 is running at 36MHz. */
-		i2c_set_clock_frequency( i2c, I2C_CR2_FREQ_36MHZ );
-
-		/* 400KHz - I2C Fast Mode */
-		i2c_set_fast_mode( i2c );
-
-
-		// i2c_set_speed(); +++++
-
-		/*
-		* fclock for I2C is 36MHz APB2 -> cycle time 28ns, low time at 400kHz
-		* incl trise -> Thigh = 1600ns; CCR = tlow/tcycle = 0x1C,9;
-		* Datasheet suggests 0x1e.
-		*/
-		i2c_set_ccr( i2c, 0x1e );
-
-		/*
-		* fclock for I2C is 36MHz -> cycle time 28ns, rise time for
-		* 400kHz => 300ns and 100kHz => 1000ns; 300ns/28ns = 10;
-		* Incremented by 1 -> 11.
-		*/
-		i2c_set_trise( i2c, 0x0b );
-
-		/*
-		* This is our slave address - needed only if we want to receive from
-		* other masters.
-		*/
-		// i2c_set_own_7bit_slave_address( i2c, 0x32 );
-
-		/* If everything is configured -> enable the peripheral. */
-		i2c_peripheral_enable( i2c );
-	}
-protected:
-	enum I2cStatusFlags {
-		I2C_SR_SB = I2C_SR1_SB,
-		I2C_SR_ADDR = I2C_SR1_ADDR,
-		I2C_SR_BTF = I2C_SR1_BTF,
-		I2C_SR_ADD10 = I2C_SR1_ADD10,
-		I2C_SR_STOPF = I2C_SR1_STOPF,
-		I2C_SR_RxNE = I2C_SR1_RxNE,
-		I2C_SR_TxE = I2C_SR1_TxE,
-		I2C_SR_BERR = I2C_SR1_BERR,
-		I2C_SR_ARLO = I2C_SR1_ARLO,
-		I2C_SR_AF = I2C_SR1_AF,
-		I2C_SR_OVR = I2C_SR1_OVR,
-		I2C_SR_PECERR = I2C_SR1_PECERR,
-		I2C_SR_TIMEOUT = I2C_SR1_TIMEOUT,
-		I2C_SR_SMBALERT = I2C_SR1_SMBALERT,
-		I2C_SR_MSL = I2C_SR2_MSL << 16,
-		I2C_SR_BUSY = I2C_SR2_BUSY << 16,
-		I2C_SR_TRA = I2C_SR2_TRA << 16,
-		I2C_SR_GENCALL = I2C_SR2_GENCALL << 16,
-		I2C_SR_SMBDEFAULT = I2C_SR2_SMBDEFAULT << 16,
-		I2C_SR_SMBHOST = I2C_SR2_SMBHOST << 16,
-		I2C_SR_DUALF = I2C_SR2_DUALF << 16
-		// I2C_SR_PEC = I2C_SR2_PEC << 16
-	};
-	uint32_t get_sr()
-	{
-		uint32_t sr = I2C_SR1(i2c);
-		sr |= I2C_SR2(i2c) << 16;
-		return sr;
-	}
-	bool send_start( uint8_t addr )
-	{
-		uint16_t delay_counter;
-		uint32_t reg32 __attribute__((unused));
-
-		/* Send START condition. */
-		i2c_send_start( i2c );
-
-		/* Waiting for START is send and switched to master mode. */
-		delay_counter = 65535;
-		while( !( (I2C_SR1(i2c) & I2C_SR1_SB) & (I2C_SR2(i2c) & (I2C_SR2_MSL | I2C_SR2_BUSY)) ) )
-		{
-			if( delay_counter-- == 0 )
-			{
-				return false;
-			}
-		}
-
-		/* Send destination address. */
-		i2c_send_7bit_address( i2c, addr, I2C_WRITE );
-
-		/* Waiting for address is transferred. */
-		delay_counter = 65535;
-		while( !(I2C_SR1(i2c) & I2C_SR1_ADDR) )
-		{
-			if( delay_counter-- == 0 )
-			{
-				return false;
-			}
-		}
-
-		/* Cleaning ADDR condition sequence. */
-		reg32 = I2C_SR2(i2c);
-
-		return true;
-	}
-	bool send_data( uint8_t data )
-	{
-		uint16_t delay_counter;
-
-		i2c_send_data( i2c, data );
-		delay_counter = 65535;
-		while( !(I2C_SR1(i2c) & I2C_SR1_BTF) )
-		{
-			if( delay_counter-- == 0 )
-			{
-				return false;
-			}
-		}
-
-		return true;
-	}
-	bool send_stop()
-	{
-		uint16_t delay_counter;
-
-		/* After the last byte we have to wait for TxE too. */
-		delay_counter = 65535;
-		while( !(I2C_SR1(i2c) & (I2C_SR1_BTF | I2C_SR1_TxE)) )
-		{
-			if( delay_counter-- == 0 )
-			{
-				return false;
-			}
-		}
-
-		/* Send STOP condition. */
-		i2c_send_stop(i2c);
-
-		// +++ is here a delay/wait-for-flag needed ?
-
-		return true;
-	}
-	void reset()
-	{
-		// +++++
-	}
-public:
-	bool write( uint8_t slave_addr, uint8_t ctrl_byte,
-			uint8_t* data, uint16_t length )
-	{
-		if( send_start( slave_addr ) && send_data( ctrl_byte ) )
-		{
-			bool ok = true;
-			while( ok && length-- > 0 )
-			{
-				ok = send_data( *data++ );
-			}
-			if( ok && send_stop() )
-			{
-				return true;
-			}
-		}
-		reset();
-		return false;
-	}
-};
-#endif
-
-
 struct Font
 {
+	// height in bytes (8 pixel)
 	uint8_t height;
+	// width of a character in pixels without the space
+	int8_t width;
+	// space between two characters
+	uint8_t space;
+	// value of the first character
+	uint8_t first_char;
+	// the number of characters in this font
+	uint8_t char_count;
+	// the character data
+	const uint8_t* data;
 };
+
+extern const Font font_5x8;
+extern const Font font_8x8;
+extern const Font font_8x12;
+extern const Font font_16x16;
+extern const Font font_7seg_32x50;
 
 class Display
 {
 public:
+	// +++++ these two should be configurable
+	enum {
+		HEIGHT_PIX = 32,
+		WIDTH_PIX = 128,
+		HEIGHT_BLK = HEIGHT_PIX/8,
+		WIDTH_BLK = WIDTH_PIX/8,
+		BLOCK_COUNT = HEIGHT_BLK * WIDTH_BLK
+	};
+	/*
+	const uint8_t HEIGHT_PIX = 32;
+	const uint8_t WIDTH_PIX = 128;
+	const uint8_t HEIGHT_BLK = HEIGHT_PIX/8;
+	const uint8_t WIDTH_BLK = WIDTH_PIX/8;
+	const uint8_t BLOCK_COUNT = HEIGHT_BLK * WIDTH_BLK;
+	*/
 	enum Constants
 	{
-		// +++++ these two should be configurable
-		LCD_HEIGHT = 32,
-		LCD_WIDTH = 128,
-		BLOCK_COUNT = LCD_HEIGHT * LCD_WIDTH / (8*8),
 
 		/**
 		  I2C Slave Address
@@ -772,139 +595,21 @@ public:
 private:
 	Base_I2C& i2c;
 	uint8_t i2c_addr;
-	uint8_t gfx[LCD_HEIGHT*LCD_WIDTH/8];
-	uint16_t changed_blocks[LCD_HEIGHT*LCD_WIDTH/(8*8*2)];
+	uint8_t gfx[HEIGHT_BLK*WIDTH_PIX];
+	uint16_t changed_blocks[HEIGHT_BLK];
 public:
-	Display( Base_I2C& _i2c, bool second_addr=false )
-	  : i2c(_i2c), i2c_addr( second_addr ? SLAVE_ADDR_1 : SLAVE_ADDR_0 )
-	{
-		const bool external_vcc = false;
-		uint8_t i2c_cmd[] = {
-			// i2c_addr,
-			// CTRL_BYTE_CMD_STREAM,
-
-			SLEEP_MODE_ON,
-			SET_CLOCK_CONFIG, 0x80,
-			SET_MULTIPLEX_RATIO, LCD_HEIGHT-1,
-			SET_DISP_OFFS, 0,
-			START_LINE | 0,
-			CHARGE_PUMP,
-				external_vcc ? CHARGE_PUMP_DISABLED : CHARGE_PUMP_ENABLED,
-			SET_ADDR_MODE, ADDR_MODE_HORIZ,
-			SET_PAGE_RANGE, 0, (LCD_HEIGHT/8)-1,
-			SET_COL_ADDR, 0, LCD_WIDTH-1,
-
-			// the following two rotate the display 180 degrees
-			SET_SEG_REMAP_ON,
-			SET_SCAN_DIR_DOWN,
-
-			SET_COM_PIN_CONFIG, 0x08,
-			SET_CONTRAST, 0x8F,
-			SET_PRECHARGE_PERIOD, 0x22,
-			SET_VCOM_DESELECT_LEVEL, VCOM_LEVEL_0_77, // ada uses invalid 0x40
-			DISPLAY_ON,
-			SET_INVERSE_OFF,
-			DEACTIVATE_SCROLL,
-			SLEEP_MODE_OFF
-		};
-		// i2c_write( i2c_cmd, sizeof(i2c_cmd) );
-		i2c.write( i2c_addr, CTRL_BYTE_CMD_STREAM,
-				i2c_cmd, sizeof(i2c_cmd) );
-		clear();
-#if 1 // ++++-- test
-		gfx[0] = 0xFF;
-		gfx[1] = 0x81;
-		gfx[2] = 0xBD;
-		gfx[3] = 0xA5;
-		gfx[4] = 0xA5;
-		gfx[5] = 0xBD;
-		gfx[6] = 0x81;
-		gfx[7] = 0xFF;
-#endif
-		update();
-	}
+	Display( Base_I2C& _i2c, bool second_addr=false );
 protected:
-	Display( const Display& orig ) : i2c(orig.i2c), i2c_addr(0) {}
+	Display( const Display& orig );
 public:
-	~Display()
-	{
-	}
+	~Display();
 protected:
-	Display& operator=( const Display& orig __attribute__((unused)) ) { return *this; }
-private:
-	/*
-	void i2c_cmd( uint8_t data_cnt, uint8_t cmd, data1 )
-	{
-		i2c_cmd[1] = 0x00;
-		i2c_cmd[2] = cmd;
-	}
-	*/
+	Display& operator=( const Display& orig __attribute__((unused)) );
 public:
-	/*
-	void sleep_mode( bool on )
-	{
-		i2c_cmd( 0, SSD1306_SLEEP_MODE_ON, 0 );
-	}
-	*/
-	void clear()
-	{
-		memset( gfx, 0, LCD_HEIGHT*LCD_WIDTH/8 );
-		// memset( changed_blocks, 0xFF, BLOCK_COUNT );
-		for( uint8_t i=0; i<LCD_HEIGHT/8; i++ )
-		{
-			changed_blocks[i] = (1 << (LCD_WIDTH/8)) - 1;
-		}
-	}
-	void update()
-	{
-		uint8_t i;
-		int16_t start = -1;
-
-		// +++++ this is not optimal for displays with less than 128 columns
-		for( i=0; i<BLOCK_COUNT; i++ )
-		{
-			if( changed_blocks[i/8] >> (i&7) )
-			{
-				if( start < 0 )
-				{
-					start = i;
-				}
-			}
-			else if( start >= 0 )
-			{
-				uint8_t j = i+1;
-				if( j >= BLOCK_COUNT || (changed_blocks[j/8] >> (j&7)) == 0 )
-				{
-					transfer_blocks( start, i-1 );
-				}
-			}
-		}
-		if( start >= 0 )
-		{
-			transfer_blocks( start, i-1 );
-		}
-	}
+	void clear();
+	void update();
 private:
-	void transfer_blocks( uint8_t start, uint8_t end )
-	{
-		uint16_t start_byte = start * 8;
-		uint16_t byte_count = (end - start + 1) * 8;
-		/* +++--  this is for page addressing
-		uint8_t i2c_cmds[] = {
-			SET_PAGE_ADDR | (start/(LCD_WIDTH/8)),
-			SET_COL_ADDR_HIGH | ((start >> 1) & 0x0F),
-			SET_COL_ADDR_LOW | ((start & 1) << 3)
-		};
-		*/
-		// +++++ how to set the "cursor" ?
-		uint8_t i2c_cmds[] = {
-			42
-		};
-		i2c.write( i2c_addr, CTRL_BYTE_CMD_STREAM,
-				i2c_cmds, sizeof(i2c_cmds) );
-		i2c.write( i2c_addr, CTRL_BYTE_DATA_STREAM,
-				gfx+start_byte, byte_count );
-	}
+	void transfer_blocks( uint8_t page, uint8_t start, uint8_t end );
 public:
 	void horiz_line( uint8_t x1, uint8_t x2, uint8_t y, PixelOperation op )
 	{
@@ -914,196 +619,34 @@ public:
 	{
 		rect_filled( x, y1, x, y2, op );
 	}
-	void rect( uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2, PixelOperation op )
-	{
-		rect_filled( x1, y1, x2, y1, op );
-		rect_filled( x1, y2, x2, y2, op );
-		rect_filled( x1, y1, x1, y2, op );
-		rect_filled( x2, y1, x2, y2, op );
-	}
-	void rect_filled( uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2, PixelOperation op )
-	{
-		if( x1 >= LCD_WIDTH ) x1 = LCD_WIDTH - 1;
-		if( x2 >= LCD_WIDTH ) x2 = LCD_WIDTH - 1;
-		if( y1 >= LCD_HEIGHT ) y1 = LCD_HEIGHT - 1;
-		if( y2 >= LCD_HEIGHT ) y2 = LCD_HEIGHT - 1;
-		if( x1 > x2 ) swap( x1, x2 );
-		if( y1 > y2 ) swap( y1, y2 );
-		uint8_t start_page = y1 >> 3;
-		uint8_t end_page = y2 >> 3;
-		for( uint8_t page=start_page+1; page<end_page; page++ )
-		{
-			uint8_t* pgfx = gfx + page * LCD_WIDTH + x1;
-			uint8_t pattern;
-			if( page == start_page )
-			{
-				if( page == end_page )
-				{
-					// Y start and end are in the same page
-					pattern = (1 << (y2 & 3)) - (1 << (y1 & 3));
-				}
-				else
-				{
-					// Y start is in this page, end is in a later page
-					pattern = (1 << 8) - (1 << (y1 & 3));
-				}
-			}
-			else
-			{
-				if( page == end_page )
-				{
-					// Y end is in this page but not the start
-					pattern = (1 << (y2 & 3)) - 1;
-				}
-				else
-				{
-					// neither Y start nor end are in this page
-					pattern = 0xFF;
-				}
-			}
-			for( uint8_t x=x1; x<=x2; x++ )
-			{
-				switch( op )
-				{
-					case SET_PIXEL: *pgfx |= pattern; break;
-					case CLEAR_PIXEL: *pgfx &= ~pattern; break;
-					case INVERT_PIXEL: *pgfx ^= pattern; break;
-				}
-				pgfx++;
-				changed_blocks[start_page] |= 1 << (x >> 3);
-			}
-		}
-	}
+	void rect( uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2,
+			PixelOperation op );
+	void rect_filled( uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2,
+			PixelOperation op );
 private:
-	void pixel_internal( uint8_t x, uint8_t y, PixelOperation op )
-	{
-		uint8_t* pgfx = gfx + x + (y&~3) * (LCD_WIDTH/8);
-		uint8_t pattern = 1 << (y & 3);
-		switch( op )
-		{
-			case SET_PIXEL: *pgfx |= pattern; break;
-			case CLEAR_PIXEL: *pgfx &= ~pattern; break;
-			case INVERT_PIXEL: *pgfx ^= pattern; break;
-		}
-		changed_blocks[y >> 3] |= 1 << (x >> 3);
-	}
+	void pixel_internal( uint8_t x, uint8_t y, PixelOperation op );
 public:
 	void pixel( uint8_t x, uint8_t y, PixelOperation op )
 	{
-		if( x < LCD_WIDTH && y < LCD_HEIGHT )
+		if( x < WIDTH_PIX && y < HEIGHT_PIX )
 		{
 			pixel_internal( x, y, op );
 		}
 	}
-	void line( uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2, PixelOperation op )
-	{
-		// is it h or v line?
-		if( x1 == x2 || y1 == y2 )
-		{
-			rect_filled( x1, y1, x2, y2, op );
-			return;
-		}
-		// hmm, does this make sense? it is maybe not what the caller wants
-		// but we have to limit the values somehow
-		if( x1 >= LCD_WIDTH ) x1 = LCD_WIDTH - 1;
-		if( x2 >= LCD_WIDTH ) x2 = LCD_WIDTH - 1;
-		if( y1 >= LCD_HEIGHT ) y1 = LCD_HEIGHT - 1;
-		if( y2 >= LCD_HEIGHT ) y2 = LCD_HEIGHT - 1;
-		// calculate the differences of the x and y values and their absolutes
-		int16_t dx = x2 - x1;
-		int16_t dy = y2 - y1;
-		int16_t adx = dx >= 0 ? dx : -dx;
-		int16_t ady = dy >= 0 ? dy : -dy;
-		// is the line between -45 and +45 degrees?
-		if( ady < adx )
-		{
-			// between -45 and +45 degrees, only x is incremented in every step
-			// y is incremented or decremented depending on the angle
-			if( dx < 0 )
-			{
-				// swap the coordinates, we want an increasing X coordinate
-				swap( x1, x2 );
-				swap( y1, y2 );
-				dx = -dx;
-				dy = -dy;
-			}
-			// set y start
-			int16_t y = y1 << 8;
-			// get the slope for the line
-			int16_t a = ((ady << 8) + 255) / dx;
-			// the offset at the end of the line, divided by two
-			int16_t o = (a * dx - (ady << 8)) / 2;
-			// is y increasing?
-			if( dy >= 0 )
-			{
-				// adjust y so that after adding the offset it will increase
-				// this centers the line in the pixel
-				y += 256 - o;
-			}
-			else
-			{
-				// adjust y so that after subtracting the offset it will
-				// decrease
-				y += o;
-				// slope is negative
-				a = -a;
-			}
-			// draw the line
-			for( uint8_t x=x1; x<=x2; x++ )
-			{
-				pixel_internal( x, y>>8, op );
-				y += a;
-			}
-		}
-		else
-		{
-			// between 45 and 135 degrees, only y is incremented in every step
-			if( dy < 0 )
-			{
-				swap( x1, x2 );
-				swap( y1, y2 );
-				dx = -dx;
-				dy = -dy;
-			}
-			int16_t x = x1 << 8;
-			int16_t a = ((dx << 8) + 255) / dy;
-			int16_t o = (a * dy - (dx << 8)) / 2;
-			if( dx >= 0 )
-			{
-				x += 256 - o;
-			}
-			else
-			{
-				x += o;
-				a = -a;
-			}
-			for( uint8_t y=y1; y<=y2; y++ )
-			{
-				pixel_internal( x>>8, y, op );
-				x += a;
-			}
-		}
-	}
+	void line( uint8_t x1, uint8_t y1, uint8_t x2, uint8_t y2, PixelOperation op );
 	/* ugh, somebody please implement this ;)
 	void circle( uint8_t x, uint8_t y, uint8_t r, PixelOperation op )
 	{
 	}
 	*/
-	void text( uint8_t x, uint8_t y, Font& font, PixelOperation op, const char* text, uint8_t length )
-	{
-		// ++++++++ implement
-		if( !( x || y || font.height || op || text || length ) )
-		{
-			pixel_internal( 0, 0, INVERT_PIXEL );
-			pixel_internal( 0, 0, INVERT_PIXEL );
-		}
-	}
+	uint8_t text( uint8_t x, uint8_t y, const Font& font, PixelOperation op,
+			const char* text, uint8_t length );
 	/* +++++ implement
-	void icon( uint8_t x, uint8_t y, Icon& icon, PixelOperation op )
-	{
-	}
+	void icon( uint8_t x, uint8_t y, Icon& icon, PixelOperation op );
 	*/
 };
 
 }; // namespace SSD1306
+
+#endif // SSD1306_H
 
